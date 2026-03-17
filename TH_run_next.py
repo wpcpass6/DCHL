@@ -6,6 +6,7 @@ THGR-Next 训练入口。
 """
 
 import argparse
+import csv
 import datetime
 import logging
 import os
@@ -41,6 +42,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--decay", type=float, default=5e-4)
     p.add_argument("--dropout", type=float, default=0.2)
+    p.add_argument("--label_smoothing", type=float, default=0.05)
     p.add_argument("--deviceID", type=int, default=0)
 
     p.add_argument("--data_dir", type=str, default="datasets")
@@ -65,6 +67,8 @@ def parse_args():
     p.add_argument("--beta_region", type=float, default=0.2)
     p.add_argument("--mask_ratio", type=float, default=0.05)
     p.add_argument("--lambda_mask", type=float, default=0.03)
+    p.add_argument("--early_stop_patience", type=int, default=8)
+    p.add_argument("--min_delta", type=float, default=1e-4)
 
     p.add_argument("--save_dir", type=str, default="logs")
     args = p.parse_args()
@@ -165,11 +169,29 @@ def main():
     ).to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.decay)
-    criterion = nn.CrossEntropyLoss().to(device)
+    criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing).to(device)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode="max",
+        factor=0.5,
+        patience=2,
+        min_lr=1e-6,
+    )
     ks = [1, 5, 10, 20]
 
     best_ndcg10 = -1.0
     best_epoch = -1
+    no_improve_epochs = 0
+    best_metrics = {
+        "test_recall1": 0.0,
+        "test_recall5": 0.0,
+        "test_recall10": 0.0,
+        "test_recall20": 0.0,
+        "test_ndcg1": 0.0,
+        "test_ndcg5": 0.0,
+        "test_ndcg10": 0.0,
+        "test_ndcg20": 0.0,
+    }
 
     logging.info("4. Start Training")
     for epoch in range(args.num_epochs):
@@ -225,17 +247,120 @@ def main():
             logging.info("Test NDCG@%d: %.4f", k, float(test_nd[:, c].mean()))
 
         ndcg10 = float(test_nd[:, ks.index(10)].mean())
+        rec10 = float(test_rec[:, ks.index(10)].mean())
+        scheduler.step(ndcg10)
+        current_lr = optimizer.param_groups[0]["lr"]
+        logging.info("LR: %.6e", current_lr)
+        logging.info(
+            "EPOCH_KEY epoch=%d ndcg10=%.4f recall10=%.4f best_ndcg10=%.4f",
+            epoch,
+            ndcg10,
+            rec10,
+            best_ndcg10,
+        )
+
         if ndcg10 > best_ndcg10:
             best_ndcg10 = ndcg10
             best_epoch = epoch
+            no_improve_epochs = 0
+            best_metrics = {
+                "test_recall1": float(test_rec[:, ks.index(1)].mean()),
+                "test_recall5": float(test_rec[:, ks.index(5)].mean()),
+                "test_recall10": rec10,
+                "test_recall20": float(test_rec[:, ks.index(20)].mean()),
+                "test_ndcg1": float(test_nd[:, ks.index(1)].mean()),
+                "test_ndcg5": float(test_nd[:, ks.index(5)].mean()),
+                "test_ndcg10": ndcg10,
+                "test_ndcg20": float(test_nd[:, ks.index(20)].mean()),
+            }
             model_path = os.path.join(save_dir, f"{args.dataset}_TH_next.pt")
             torch.save(model.state_dict(), model_path)
             logging.info("Saved best model at epoch %d by NDCG@10", epoch)
+        else:
+            improve = ndcg10 - best_ndcg10
+            if improve < args.min_delta:
+                no_improve_epochs += 1
+
+        if no_improve_epochs >= args.early_stop_patience:
+            logging.info(
+                "Early stop at epoch %d (patience=%d, min_delta=%.1e)",
+                epoch,
+                args.early_stop_patience,
+                args.min_delta,
+            )
+            break
 
         logging.info("Epoch time: %.2f min", (time.time() - st) / 60.0)
 
     logging.info("Best epoch: %d", best_epoch)
     logging.info("Best Test NDCG@10: %.4f", best_ndcg10)
+
+    # 让网格实验结果一眼可读：终端/日志输出单行 KEY，并写入 run 内 yaml + 全局 csv。
+    key_line = (
+        "BEST_RESULT "
+        f"run_dir={save_dir} dataset={args.dataset} "
+        f"lambda_mask={args.lambda_mask} geo_k={args.geo_k} num_hg_layers={args.num_hg_layers} "
+        f"alpha_cat={args.alpha_cat} beta_region={args.beta_region} "
+        f"best_epoch={best_epoch} "
+        f"best_ndcg10={best_metrics['test_ndcg10']:.4f} best_recall10={best_metrics['test_recall10']:.4f}"
+    )
+    logging.info("=" * 80)
+    logging.info(key_line)
+    logging.info("=" * 80)
+
+    best_obj = {
+        "run_dir": save_dir,
+        "dataset": args.dataset,
+        "lambda_mask": float(args.lambda_mask),
+        "geo_k": int(args.geo_k),
+        "num_hg_layers": int(args.num_hg_layers),
+        "alpha_cat": float(args.alpha_cat),
+        "beta_region": float(args.beta_region),
+        "best_epoch": int(best_epoch),
+        "best_metrics": best_metrics,
+    }
+    with open(os.path.join(save_dir, "best_result.yaml"), "w", encoding="utf-8") as f:
+        yaml.dump(best_obj, f, sort_keys=False)
+
+    csv_path = os.path.join(args.save_dir, "TH_grid_results.csv")
+    csv_header = [
+        "run_dir",
+        "dataset",
+        "lambda_mask",
+        "geo_k",
+        "num_hg_layers",
+        "alpha_cat",
+        "beta_region",
+        "best_epoch",
+        "best_ndcg10",
+        "best_recall10",
+        "best_ndcg5",
+        "best_recall5",
+        "best_ndcg20",
+        "best_recall20",
+    ]
+    csv_row = {
+        "run_dir": save_dir,
+        "dataset": args.dataset,
+        "lambda_mask": float(args.lambda_mask),
+        "geo_k": int(args.geo_k),
+        "num_hg_layers": int(args.num_hg_layers),
+        "alpha_cat": float(args.alpha_cat),
+        "beta_region": float(args.beta_region),
+        "best_epoch": int(best_epoch),
+        "best_ndcg10": round(best_metrics["test_ndcg10"], 6),
+        "best_recall10": round(best_metrics["test_recall10"], 6),
+        "best_ndcg5": round(best_metrics["test_ndcg5"], 6),
+        "best_recall5": round(best_metrics["test_recall5"], 6),
+        "best_ndcg20": round(best_metrics["test_ndcg20"], 6),
+        "best_recall20": round(best_metrics["test_recall20"], 6),
+    }
+    need_header = not os.path.exists(csv_path)
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=csv_header)
+        if need_header:
+            writer.writeheader()
+        writer.writerow(csv_row)
 
 
 if __name__ == "__main__":

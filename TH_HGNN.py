@@ -42,6 +42,7 @@ class THHGNNLayer(nn.Module):
         super().__init__()
         self.dim = dim
         self.dropout = dropout
+        self.type_order = ["func", "region", "geo", "mob"]
 
         # 节点类型变换（poi/cat/reg）
         self.w_poi = nn.Linear(dim, dim, bias=False)
@@ -70,6 +71,9 @@ class THHGNNLayer(nn.Module):
         self.q_mob = nn.Linear(dim, dim, bias=False)
         self.k_mob = nn.Linear(dim, dim, bias=False)
         self.v_mob = nn.Linear(dim, dim, bias=False)
+
+        # 学习不同超边类型在当前层的融合权重，替代简单平均。
+        self.type_gate_logits = nn.Parameter(torch.zeros(len(self.type_order)))
 
         self.norm = nn.LayerNorm(dim)
 
@@ -101,8 +105,7 @@ class THHGNNLayer(nn.Module):
         device = x.device
         h_node = self._node_type_project(x, graph_tensors["node_type_ids"])
 
-        total_update = torch.zeros_like(x)
-        used_types = 0
+        type_updates = {}
 
         for e_type in graph_tensors["types"]:
             pack = graph_tensors["per_type"][e_type]
@@ -131,11 +134,14 @@ class THHGNNLayer(nn.Module):
             msg = v * attn
             node_update = _scatter_sum(msg, node_ids, dim_size=n_nodes)
 
-            total_update = total_update + node_update
-            used_types += 1
+            type_updates[e_type] = node_update
 
-        if used_types > 0:
-            total_update = total_update / float(used_types)
+        total_update = torch.zeros_like(x)
+        if type_updates:
+            used_idx = [self.type_order.index(t) for t in graph_tensors["types"] if t in type_updates]
+            gate = torch.softmax(self.type_gate_logits[used_idx], dim=0)
+            for i, e_type in enumerate([t for t in graph_tensors["types"] if t in type_updates]):
+                total_update = total_update + gate[i] * type_updates[e_type]
 
         out = x + F.dropout(total_update, p=self.dropout, training=self.training)
         out = self.norm(out)

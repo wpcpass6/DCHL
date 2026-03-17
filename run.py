@@ -147,7 +147,7 @@ def main():
     # 推荐任务是多分类：预测下一 POI 的类别索引
     criterion = nn.CrossEntropyLoss().to(device)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 'min', verbose=True, factor=args.lr_scheduler_factor)
+           optimizer, 'min', factor=args.lr_scheduler_factor)
 
     # Train
     # Ks_list 用于计算 Recall@K / NDCG@K

@@ -1,0 +1,6 @@
+2026-03-17 11:24:08 1. Parse Arguments
+2026-03-17 11:24:08 Namespace(dataset='TKY', seed=2023, distance_threshold=2.5, num_epochs=30, batch_size=200, emb_dim=128, lr=0.001, decay=0.0005, dropout=0.3, deviceID=0, lambda_cl=0.1, num_mv_layers=3, num_geo_layers=3, num_di_layers=3, temperature=0.5, keep_rate=1.0, keep_rate_poi=1.0, lr_scheduler_factor=0.1, save_dir='logs')
+2026-03-17 11:24:08 device: cuda:0
+2026-03-17 11:24:08 2. Load Dataset
+2026-03-17 11:24:58 3. Construct DataLoader
+2026-03-17 11:24:58 4. Load Model

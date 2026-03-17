@@ -88,15 +88,26 @@ with open(os.path.join(current_save_dir, args_filename), 'w') as f:
 
 
 def main():
+    """训练入口。
+
+    主流程：
+    1) 解析并打印配置；
+    2) 初始化数据集与 DataLoader；
+    3) 初始化模型与优化器；
+    4) 逐 epoch 训练与评估；
+    5) 保存最优模型并汇总指标。
+    """
     # Parse Arguments
     logging.info("1. Parse Arguments")
     logging.info(args)
     logging.info("device: {}".format(device))
     if args.dataset == "TKY":
+        # TKY 数据集统计
         NUM_USERS = 2173
         NUM_POIS = 7038
         PADDING_IDX = NUM_POIS
     elif args.dataset == "NYC":
+        # NYC 数据集统计
         NUM_USERS = 834
         NUM_POIS = 3835
         PADDING_IDX = NUM_POIS
@@ -120,6 +131,7 @@ def main():
                               device=device)
 
     # 3. Construct DataLoader
+    # 说明：collate_fn_4sq 会对变长轨迹做 padding
     logging.info("3. Construct DataLoader")
     train_dataloader = DataLoader(dataset=train_dataset, batch_size=args.batch_size, shuffle=True,
                                   collate_fn=lambda batch: collate_fn_4sq(batch, padding_value=PADDING_IDX))
@@ -132,11 +144,13 @@ def main():
     model = model.to(device)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.decay)
+    # 推荐任务是多分类：预测下一 POI 的类别索引
     criterion = nn.CrossEntropyLoss().to(device)
     lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 'min', verbose=True, factor=args.lr_scheduler_factor)
 
     # Train
+    # Ks_list 用于计算 Recall@K / NDCG@K
     logging.info("5. Start Training")
     Ks_list = [1, 5, 10, 20]
     final_results = {"Rec1": 0.0, "Rec5": 0.0, "Rec10": 0.0, "Rec20": 0.0,
@@ -146,6 +160,7 @@ def main():
     monitor_loss = float('inf')
     best_test_rec5 = 0.0
     for epoch in range(args.num_epochs):
+        # ---------- 每个 epoch：训练 + 测试 ----------
         logging.info("================= Epoch {}/{} =================".format(epoch, args.num_epochs))
         start_time = time.time()
         model.train()
@@ -156,9 +171,11 @@ def main():
         train_recall_array = np.zeros(shape=(len(train_dataloader), len(Ks_list)))
         train_ndcg_array = np.zeros(shape=(len(train_dataloader), len(Ks_list)))
         for idx, batch in enumerate(train_dataloader):
+            # ---------- 训练 batch ----------
             logging.info("Train. Batch {}/{}".format(idx, len(train_dataloader)))
             optimizer.zero_grad()
 
+            # 前向：返回预测 logits + 用户对比损失 + POI 对比损失
             predictions, loss_cl_users, loss_cl_pois = model(train_dataset, batch)
 
             # 总损失 = 推荐损失 + 对比学习损失
@@ -167,10 +184,12 @@ def main():
             logging.info("Train. loss_rec: {:.4f}; loss_cl_pois: {:.4f}; loss_cl_users: {:.4f}; "
                          "loss: {:.4f}".format(loss_rec.item(), loss_cl_pois, loss_cl_users, loss))
 
+            # 反向传播与参数更新
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
 
+            # 统计当前 batch 的 Recall/NDCG
             for k in Ks_list:
                 recall, ndcg = batch_performance(predictions.detach().cpu(), batch["label"].detach().cpu(), k)
                 col_idx = Ks_list.index(k)
@@ -195,8 +214,11 @@ def main():
         with torch.no_grad():
             for idx, batch in enumerate(test_dataloader):
 
+                # ---------- 测试 batch ----------
+
                 logging.info("Test. Batch {}/{}".format(idx, len(test_dataloader)))
 
+                # 测试前向
                 predictions, loss_cl_users, loss_cl_pois = model(test_dataset, batch)
 
                 # 测试阶段同样计算总损失用于监控
@@ -207,6 +229,7 @@ def main():
 
                 test_loss += loss.item()
 
+                # 统计测试 batch 指标
                 for k in Ks_list:
                     recall, ndcg = batch_performance(predictions.detach().cpu(), batch["label"].detach().cpu(), k)
                     col_idx = Ks_list.index(k)
@@ -223,10 +246,10 @@ def main():
             logging.info("Recall@{}: {:.4f}".format(k, recall))
             logging.info("NDCG@{}: {:.4f}".format(k, ndcg))
 
-        # Check monitor loss and monitor score for updating
+        # 用最小测试损失驱动学习率调度器
         monitor_loss = min(monitor_loss, test_loss)
 
-        # Learning rate schuduler
+        # Learning rate scheduler
         lr_scheduler.step(monitor_loss)
 
         # 按 Recall@5 选择并保存当前最好模型
@@ -235,11 +258,11 @@ def main():
             best_test_rec5 = test_recall5
             logging.info("Update test results and save model at epoch{}".format(epoch))
 
-            # define saved_model_path
+            # 保存当前最优参数
             saved_model_path = os.path.join(current_save_dir, "{}.pt".format(args.dataset))
             torch.save(model.state_dict(), saved_model_path)
 
-        # update best result
+        # 更新全局最佳指标记录
         for k in Ks_list:
             if k == 1:
                 final_results["Rec1"] = max(final_results["Rec1"], np.mean(test_recall_array[:, 0]))

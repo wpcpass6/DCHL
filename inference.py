@@ -88,20 +88,30 @@ with open(os.path.join(current_save_dir, args_filename), 'w') as f:
 
 
 def main():
+    """推理入口。
+
+    流程：
+    1) 加载测试集与用户子集；
+    2) 加载训练好的模型参数；
+    3) 计算 Recall/NDCG 指标。
+    """
     # Parse Arguments
     logging.info("1. Parse Arguments")
     logging.info(args)
     logging.info("device: {}".format(device))
     if args.dataset == "TKY":
+        # TKY 数据集统计
         NUM_USERS = 2173
         NUM_POIS = 7038
         PADDING_IDX = NUM_POIS
     elif args.dataset == "NYC":
+        # NYC 数据集统计
         NUM_USERS = 834
         NUM_POIS = 3835
         PADDING_IDX = NUM_POIS
 
     # Load Dataset
+    # 只加载测试集用于推理
     logging.info("2. Load Test Dataset")
     test_dataset = POIDataset(data_filename="datasets/{}/test_poi_zero.txt".format(args.dataset),
                               pois_coos_filename="datasets/{}/{}_pois_coos_poi_zero.pkl".format(args.dataset,
@@ -109,28 +119,32 @@ def main():
                               num_users=NUM_USERS, num_pois=NUM_POIS, padding_idx=PADDING_IDX,
                               args=args, device=device)
 
+    # 只对 active_user_dict 中的用户做分组评估
     active_user_dict = load_dict_from_pkl("datasets/{}/active_user_dict.pkl".format(args.dataset))
     active_user_indices = active_user_dict.keys()
     test_partial_dataset = POIPartialDataset(test_dataset, user_indices=active_user_indices)
     logging.info("active user inference")
 
     # 3. Construct DataLoader
+    # collate_fn_4sq 会自动完成 padding
     logging.info("3. Construct DataLoader")
     test_dataloader = DataLoader(dataset=test_partial_dataset, batch_size=args.batch_size, shuffle=True,
                                  collate_fn=lambda batch: collate_fn_4sq(batch, padding_value=PADDING_IDX))
 
     # Load Model
+    # 模型结构需与训练时一致
     logging.info("4. Load Model")
     model = DCHL(NUM_USERS, NUM_POIS, args, device)
 
-    # load state dict
+    # 加载权重文件
     model_state_dict = torch.load(os.path.join(current_save_dir, "{}.pt".format(args.dataset)))
 
-    # load state_dict to model
+    # 权重写入模型
     model.load_state_dict(model_state_dict)
     model = model.to(device)
 
     # Inference
+    # 只做前向，不更新参数
     logging.info("5. Start Inference")
     Ks_list = [1, 5, 10, 20]
     final_results = {"Rec1": 0.0, "Rec5": 0.0, "Rec10": 0.0, "Rec20": 0.0,
@@ -145,10 +159,12 @@ def main():
     with torch.no_grad():
         for idx, batch in enumerate(test_dataloader):
 
+            # ---------- 推理 batch ----------
             logging.info("Test. Batch {}/{}".format(idx, len(test_dataloader)))
 
             predictions, loss_cl_users, loss_cl_pois = model(test_dataset, batch)
 
+            # 计算该 batch 的 Recall/NDCG
             for k in Ks_list:
                 recall, ndcg = batch_performance(predictions.detach().cpu(), batch["label"].detach().cpu(), k)
                 col_idx = Ks_list.index(k)
@@ -165,7 +181,7 @@ def main():
         logging.info("Recall@{}: {:.4f}".format(k, recall))
         logging.info("NDCG@{}: {:.4f}".format(k, ndcg))
 
-    # update best result
+    # 汇总全局指标
     for k in Ks_list:
         if k == 1:
             final_results["Rec1"] = max(final_results["Rec1"], np.mean(test_recall_array[:, 0]))

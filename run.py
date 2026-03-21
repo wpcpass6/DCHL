@@ -28,7 +28,8 @@ torch.backends.cudnn.enabled = True
 # parse argument
 parser = argparse.ArgumentParser()
 parser.add_argument('--dataset', default="NYC", help='NYC/TKY/Gowalla')
-parser.add_argument('--seed', default=2023, help='Random seed')
+# parser.add_argument('--seed', default=2023, help='Random seed')
+parser.add_argument('--seed', type=int, default=2023, help='Random seed')
 parser.add_argument('--distance_threshold', default=2.5, type=float, help='distance threshold 2.5 or 0.25')
 parser.add_argument('--num_epochs', type=int, default=30, help='number of epochs')
 parser.add_argument('--batch_size', type=int, default=200, help='input batch size')

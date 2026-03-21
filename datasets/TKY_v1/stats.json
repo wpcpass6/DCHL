@@ -1,0 +1,18 @@
+{
+  "dataset": "TKY",
+  "num_users": 2173,
+  "num_pois": 7038,
+  "num_categories": 258,
+  "train_sessions": 31825,
+  "test_sessions": 8995,
+  "dropped_users_after_label_pop": 0,
+  "slot_mode": "24h",
+  "session_gap_hours": 24.0,
+  "target_num_users": 2173,
+  "rules": {
+    "min_users_per_poi": 5,
+    "min_session_len": 3,
+    "min_sessions_per_user": 3,
+    "train_ratio": 0.8
+  }
+}

@@ -377,16 +377,17 @@ def gen_sparse_directed_H_poi(users_trajs_dict, num_pois):
     构建有向 POI-POI 关联矩阵。
     行表示 source POI，列表示 target POI。
     """
+    #初始化一个全0的稠密矩阵L*L
     H = np.zeros(shape=(num_pois, num_pois))
-    for userID, traj in users_trajs_dict.items():
-        # 采用“前序 POI -> 后续 POI”全连接方式构图，编码全局转移关系
+
+    for userID, traj in users_trajs_dict.items(): #遍历每个用户的完整轨迹
+        # 编码全局转移关系。1-2-3 中 1->2 和 1->3 都是关联关系。
         for src_idx in range(len(traj) - 1):
             for tar_idx in range(src_idx + 1, len(traj)):
                 src_poi = traj[src_idx]
                 tar_poi = traj[tar_idx]
                 H[src_poi, tar_poi] = 1
     H = sp.csr_matrix(H)
-
     return H
 
 
@@ -443,12 +444,13 @@ def get_hyper_deg(incidence_matrix):
     # inv_hyper_deg = hyper_deg.power(-1)
     # inv_hyper_deg_diag = sp.diags(inv_hyper_deg.toarray()[0])
 
-    # 步骤1：统计每个节点关联的超边数
+    # 统计每个节点关联的超边数，行为POI，列为用户。
+    # .sum(axis)用来指定求和方向；0表示按列求和（得到每行的和），1表示按行求和（得到每列的和）。这里我们需要统计每个节点关联的超边数，所以应该按行求和，即 axis=1。
     rowsum = np.array(incidence_matrix.sum(1))
-    # 步骤2：求逆并处理无穷值
-    d_inv = np.power(rowsum, -1).flatten()
+
+    d_inv = np.power(rowsum, -1).flatten()#取倒数，求平均/归一化
     d_inv[np.isinf(d_inv)] = 0.
-    d_mat_inv = sp.diags(d_inv)
+    d_mat_inv = sp.diags(d_inv)#将倒数构造成对角矩阵，方便后续乘法操作
 
     return d_mat_inv
 
@@ -528,15 +530,18 @@ def sparse_adj_tensor_drop_edge(sp_adj, keep_rate):
 
 
 def csr_matrix_drop_edge(csr_adj_matrix, keep_rate):
-    """对 scipy CSR 邻接做随机边丢弃。"""
+    """
+    对 scipy CSR 稀疏邻接做随机边丢弃。
+    keep_rate: 保留边的比例（0.0-1.0）。1.0 表示不丢弃。
+    返回新的 CSR 邻接矩阵。"""
     if keep_rate == 1.0:
         return csr_adj_matrix
 
-    # 步骤1：转 COO 便于按边采样
+    # 步骤1：转 COO 便于按边采样.COO格式会把非零元素存成行索引 (row) 和列索引 (col) 的一一对应关系，这里的每一对索引就代表一条“超边”连接
     coo = csr_adj_matrix.tocoo()
-    row = coo.row
-    col = coo.col
-    edgeNum = row.shape[0]
+    row = coo.row # 行索引数组，表示每条边的起点节点ID
+    col = coo.col # 列索引数组，表示每条边的终点节点ID
+    edgeNum = row.shape[0] # 丢弃操作前的边数（非零元素数）
 
     # 步骤2：生成随机保留掩码
     mask = np.floor(np.random.rand(edgeNum) + keep_rate).astype(np.bool_)
@@ -545,6 +550,8 @@ def csr_matrix_drop_edge(csr_adj_matrix, keep_rate):
     new_row = row[mask]
     new_col = col[mask]
     new_edgeNum = new_row.shape[0]
+
+    # 步骤4：新边权重npone，表示保留的边权重不变（或可根据需要调整）
     new_values = np.ones(new_edgeNum, dtype=np.float)
 
     drop_adj_matrix = sp.csr_matrix((new_values, (new_row, new_col)), shape=coo.shape)

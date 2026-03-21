@@ -74,10 +74,11 @@ class POIDataset(Dataset):
         # 将所有用户完整轨迹整理成 list[tensor]
         # self.all_train_sessions = get_all_sessions(self.sessions_dict)    # list of tensor
         self.all_train_sessions = get_all_users_seqs(self.users_trajs_dict)
-        # pad 到同一长度，便于后续 batch 处理
+        # pad_sequence将不同用户轨迹补齐到同一长度，便于后续 batch 处理
         self.pad_all_train_sessions = pad_sequence(self.all_train_sessions, batch_first=True, padding_value=padding_idx)
-        self.pad_all_train_sessions = self.pad_all_train_sessions.to(device)    # [U, MAX_SEQ_LEN]
-        self.max_session_len = self.pad_all_train_sessions.size(1)
+        self.pad_all_train_sessions = self.pad_all_train_sessions.to(device)    # 送入GPU
+        self.max_session_len = self.pad_all_train_sessions.size(1) # 记录轨迹最大长度
+
 
         # ---------- 转移视图有向超图构建 ----------
         # 步骤1：构建有向 POI->POI 超图
@@ -265,12 +266,12 @@ def collate_fn_4sq(batch, padding_value=3835):
         batch_user_rev_seq.append(item["user_rev_seq"])
         batch_user_seq_mask.append(item["user_seq_mask"])
 
-    # 步骤2：对序列字段做 padding
+    # 对变长序列字段做 padding
     pad_user_seq = pad_sequence(batch_user_seq, batch_first=True, padding_value=padding_value)
     pad_user_rev_seq = pad_sequence(batch_user_rev_seq, batch_first=True, padding_value=padding_value)
     pad_user_seq_mask = pad_sequence(batch_user_seq_mask, batch_first=True, padding_value=0)
 
-    # 步骤3：固定长度字段直接 stack
+    # 对固定长度字段直接 stack
     batch_user_idx = torch.stack(batch_user_idx)
     batch_user_seq_len = torch.stack(batch_user_seq_len)
     batch_label = torch.stack(batch_label)
